@@ -1,0 +1,382 @@
+---
+title: "AHMEDELHAMOUNI CAPSTONE R"
+author: "AHMED EL HAMOUNI"
+date: "JUNE 06, 2023"
+header-includes:
+   - \usepackage[default]{sourcesanspro}
+   - \usepackage[T1]{fontenc}
+mainfont: SourceSansPro
+output: pdf_document
+---
+
+## 1. Intro
+The MovieLens dataset consists of more than 10 million ratings provided by over 72,000 users for over 10,000 movies, according to the GroupLens website. In an ideal scenario where every user rated every movie, we would expect around 720 million ratings. However, the dataset contains only 10 million ratings, indicating that a significant portion of movies has not been rated, resulting in a "Sparse Matrix" representation.
+To address this, I plan to build a machine learning algorithm that aims to predict user ratings with high accuracy using the available data. The performance of different models will be evaluated using the Root Mean Square Error (RMSE) metric during the development phase. To facilitate this process, I will utilize subsets of the MovieLens dataset as described below:
+The edx dataset, which holds 90% of the MovieLens data, will be used for model development. However, the remaining 10% of the data, treated as the true ratings, cannot be used to assess model performance during development. Therefore, the edx dataset will be divided into two subsets:
+train_set: This subset will contain 80% of the edx data and will be used to train different models.
+test_set: Comprising 20% of the edx data, this subset will be employed to evaluate the performance of various models.
+A validation dataset, encompassing 10% of the MovieLens data, will be exclusively used to calculate the final RMSE for evaluating the best-performing model.
+The dataset includes information such as a unique userID assigned to each user, a movieID assigned to each movie, movie ratings, the timestamp of each rating, movie titles, and movie genres.
+
+
+
+\newpage 
+## 2. Methodoly
+You can access information about the MovieLens 10M dataset by visiting this link: https://grouplens.org/datasets/movielens/10m/.
+To obtain the dataset, you can download it from this link: http://files.grouplens.org/datasets/movielens/ml-10m.zip.
+The following code snippet demonstrates how to download the dataset and combine the ratings and movie information into a single dataset called "movielens." Additionally, it creates the edx and validation datasets, which will be utilized for algorithm development and testing
+
+### 2.1. Download And Preparation Of The Data
+
+```{r Libraries, message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(caret)
+library(data.table)
+library(recommenderlab)
+library(ggplot2)
+library(recosystem)
+load("Final.Rdata")
+```
+
+```{r Data Preparation, eval=FALSE, message=FALSE, warning=FALSE, include=TRUE}
+###################################################
+# ******* DOWNLOADING AND PREPARATION DATA *******#
+###################################################
+
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(recommenderlab)
+library(recosystem)
+library(ggplot2)
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+# if using R 3.6 or earlier:
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                            title = as.character(title),
+                                            genres = as.character(genres))
+# if using R 4.0 or later:
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                            title = as.character(title),
+                                            genres = as.character(genres))
+
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+      semi_join(edx, by = "movieId") %>%
+      semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+\newpage
+### 2.2. Validation set
+After the dataset creation, it is necessary to conduct data exploration to establish the approach for developing the algorithm. Firstly, an examination is conducted to determine the number of users and movies within the dataset. Subsequently, a plot is generated to visualize the top 20 highest-rated movies. Finally, separate plots are employed to analyze the number of ratings per movie and per user. 
+```{r Data Exploration}
+# Checking the number of unique users that provided ratings and how many unique movies were rated
+edx %>% summarize(n_users = n_distinct(userId),n_movies = n_distinct(movieId))
+
+# Plotting top 20 movies
+top_20 <- edx %>% group_by(title) %>% summarize(count=n()) %>% top_n(20,count) %>% 
+  arrange(desc(count))
+
+top_20 %>%
+ggplot(aes(x=reorder(title, count), y=count)) +
+geom_bar(stat="identity",color= "purple") + coord_flip(y=c(0, 40000)) +
+labs(x="", y="Number of ratings") +
+geom_text(aes(label= count), hjust=-0.1, size=3) +
+labs(title="Top 20 movies title based \n on number of ratings")
+```
+
+\newpage 
+```{r Exploring movieId}
+# Exploring the number of ratings by movieId
+edx %>% 
+    dplyr::count(movieId) %>% 
+    ggplot(aes(n)) + 
+    geom_histogram(bins = 30, color = "green") + 
+    scale_x_log10() + 
+    ggtitle("Exploring Movies") + 
+  labs(x= "movieId", y= "Number of Ratings")
+```
+
+\newpage 
+```{r Exploring userId}
+# Exploring the number of ratings by userId
+edx %>% 
+    dplyr::count(userId) %>% 
+    ggplot(aes(n)) + 
+    geom_histogram(bins = 30, color = "orange") + 
+    scale_x_log10() + 
+    ggtitle("Exploring Users") +
+  labs(x= "userId", y= "Number of Ratings")
+```
+\newpage 
+```{r}
+# Exploring the average ratings
+ edx %>% 
+   group_by(userId) %>% 
+   filter(n()>=100) %>%
+   summarize(b_u = mean(rating)) %>% 
+   ggplot(aes(b_u)) + 
+   geom_histogram(bins = 30, color = "lightblue") +
+   ggtitle("Exploring Average Ratings") + 
+   labs(x= "Rating", y= "Number of Ratings")
+```
+
+### 2.3. Exploration & Visualization
+With the dataset now created, it is essential to perform data exploration to develop the approach for building the algorithm. The following steps will be taken:
+- Determination of the number of users and movies in the dataset. This analysis will provide insights into the dataset's size and distribution.
+- Plotting the top 20 rated movies. This visualization will showcase the most popular movies based on user ratings, giving an overview of the dataset's preferences.
+- Exploring the number of ratings per movie and per user. Separate plots will be generated to examine the distribution of ratings across movies and users, providing a better understanding of the dataset's rating patterns.
+-By conducting these data exploration activities, we can gain valuable insights that will guide the development of the algorithm.
+
+\newpage 
+### 2.4. Modeling 
+In order to judge which algorithm performs better we need to specify a way to quantify what does better or worse mean. In this project I will use RMSE (Residual Mean Squared Error). We can interpret the RMSE similar to a standard deviation: it is the typical error we make when predicting a movie rating. If this number is larger than 1,it means our typical error is larger than one star, which is not good. Below is the formula used for RMSE.
+```{r RMSE}
+RMSE <- function(true_ratings, predicted_ratings){
+    sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+```
+
+Since the **`validation`** dataset can't be used until models are already built, a **`test_set`** is needed to evaluate model performance during development & compare different approaches to each other. In order to do this, I will split the **`edx`** dataset into **`train_set`** & **`test_set`** as per the code below. **Please note:** that In order to make sure that the movies & users in the **`test_set`** match the ones in the **`train_set`** I used the **`semi_join()`** function.
+```{r test & train sets, eval=FALSE, include=TRUE}
+test_index <- createDataPartition(y = edx$rating, times = 1,
+                                  p = 0.2, list = FALSE)
+train_set <- edx[-test_index,]
+test_set <- edx[test_index,]
+
+test_set <- test_set %>% 
+     semi_join(train_set, by = "movieId") %>%
+     semi_join(train_set, by = "userId")
+```
+
+\newpage 
+### 2.5. Building models
+Initially, I will begin with a simple "Baseline" approach for rating prediction. Subsequently, I will enhance this basic model by incorporating movie effects, user effects, regularization, and matrix factorization techniques. The iterative process will continue until achieving an RMSE value below 0.80.
+
+#### 2.5.1. Baseline Model:
+To establish a starting point and serve as our baseline, we can utilize the simplest model of predicting the same rating for all movies and users. In this case, the first algorithm will involve using the average rating of all movies across all users. Subsequently, I will calculate the RMSE for this model to evaluate its performance.
+```{r Baseline Model, eval=FALSE, include=TRUE}
+mu_baseline<- mean(train_set$rating)                                # Average Rating
+baseline_RMSE<- RMSE(test_set$rating, mu_baseline)                  # Baseline RMSE
+RMSE_results <- tibble(Model = "Baseline Model", RMSE = baseline_RMSE)   # Create a table with RMSE's
+baseline_RMSE
+```
+```{r Baseline Output, echo=FALSE}
+data.frame(Model = "Baseline", RMSE = baseline_RMSE) %>% knitr::kable()
+```
+
+#### 2.5.2. Movie Effect Model:
+Upon investigating the distribution of ratings per movie, as depicted in the Data Exploration section, it becomes evident that there is a significant level of variability in the number of ratings received by different movies. This variation is to be expected since blockbuster movies generally garner more views compared to smaller budget films. In the following model, I will strive to address this effect and incorporate it into the analysis.
+```{r Movie Effect, eval=FALSE, include=TRUE}
+mu_least_squares <- mean(train_set$rating) 
+
+LSE_rating_movies<- train_set %>% group_by(movieId) %>% 
+  summarize(b_i = mean(rating - mu_least_squares))
+
+LSE_prediction_movies<- mu_least_squares + test_set %>% 
+  left_join(LSE_rating_movies, by='movieId') %>% .$b_i
+
+LSE_RMSE_movies <- RMSE(LSE_prediction_movies, test_set$rating)
+
+RMSE_results <- bind_rows(RMSE_results, tibble(Model="Movie Effect Model", 
+                                               RMSE = LSE_RMSE_movies ))
+LSE_RMSE_movies
+```
+```{r RMSE movie effect, echo=FALSE}
+data.frame(Model = "Move Effect", RMSE = LSE_RMSE_movies) %>% knitr::kable()
+```
+
+\newpage 
+#### 2.5.3. Adding User Effect to Movie Effect Model:
+Continuing the improvement process, I will now focus on the "users" aspect. As demonstrated in the Data Exploration section, users exhibit varying patterns in how they rate movies. To address this, I will introduce the user effect, denoted as "b_u," into the model. By accounting for this effect, the RMSE metric displays an improvement, reflecting the impact of considering individual user preferences on the overall rating predictions.
+```{r User + Movie Effects, eval=FALSE, include=TRUE}
+LSE_rating_users <- train_set %>% left_join(LSE_rating_movies, by='movieId') %>% 
+  group_by(userId) %>% summarize(b_u = mean(rating - mu_least_squares - b_i))
+
+LSE_prediction_users <- test_set %>% left_join(LSE_rating_movies, by='movieId') %>% 
+  left_join(LSE_rating_users, by='userId') %>% 
+  mutate(pred = mu_least_squares + b_i + b_u) %>% .$pred
+
+LSE_RMSE_users <- RMSE(LSE_prediction_users, test_set$rating)
+RMSE_results <- bind_rows(RMSE_results, tibble(Model="Movie + User Effect Model", 
+                                               RMSE = LSE_RMSE_users ))
+
+LSE_RMSE_users
+```
+```{r RMSE usr + movie effect, echo=FALSE}
+data.frame(Model = "Movie + User Effect", RMSE = LSE_RMSE_users) %>% knitr::kable()
+```
+
+\newpage 
+#### 2.5.4. Regularization:
+Examining the table below provides additional insights into the variability of ratings for both movies and users. It becomes evident that movies that have received thousands of ratings should not carry the same weight when calculating the average rating as a movie that has only been rated once. The same principle applies to user ratings as well. Taking this into consideration is crucial to ensure a more accurate representation of the true preferences and opinions of both movies and users.
+Thus far, the previous models have not considered the impact of sample size when calculating averages. To address this, I will incorporate Regularization into the model presented below. The introduction of the term lambda allows for penalizing large estimates derived from small sample sizes. To determine the optimal value for lambda, cross-validation will be employed. By tuning lambda using cross-validation, we can obtain the best possible value and calculate the resulting RMSE for evaluation.
+```{r User & Movie Statistics, echo=FALSE}
+movie_count<- edx %>% count(movieId, title)
+user_count<- edx %>% count(userId)
+quick_look<- tibble(Statistic= "Movie Rarings", Avg= mean(movie_count$n), Min= min(movie_count$n), Max= max(movie_count$n))
+quick_look<- bind_rows(quick_look, tibble(Statistic= "User Ratings", Avg= mean(user_count$n), Min= min(user_count$n), Max= max(user_count$n)))
+options(digits = 1)
+quick_look %>% knitr::kable()
+```
+
+So far, the previous models haven't accounted for that effect in calculating averages. This is why I will introduce **\textcolor{rgb:red, 43;green,74;blue,148}{Regularization}** to account for that effect in the model below. The term **lambda** represents the "penalty" for penalizing large estimates that come from small sample sizes. I will use cross-validation to tune for the best lambda and calculate RMSE for that value.
+```{r Cross - Validation & Regularization, eval=FALSE, include=TRUE}
+lambdas <- seq(0, 10, 0.25)
+best_lambda <- sapply(lambdas, function(l){
+     mu <- mean(train_set$rating)
+     b_i <- train_set %>%
+          group_by(movieId) %>%
+          summarize(b_i = sum(rating - mu)/(n()+l))
+     b_u <- train_set %>% 
+          left_join(b_i, by="movieId") %>%
+          group_by(userId) %>%
+          summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+     predicted_ratings <- 
+          test_set %>% 
+          left_join(b_i, by = "movieId") %>%
+          left_join(b_u, by = "userId") %>%
+          mutate(pred = mu + b_i + b_u) %>%
+          .$pred
+     return(RMSE(predicted_ratings, test_set$rating))
+})
+
+qplot(lambdas, best_lambda)
+lambda <- lambdas[which.min(best_lambda)]
+lambda
+
+RMSE_results <- bind_rows(RMSE_results,
+                          tibble(Model="Regularized Movie + User Effect Model",  
+                                     RMSE = min(best_lambda)))
+RMSE_results
+```
+```{r Regularization Output, echo=FALSE}
+options(digits = 7)
+data.frame(Model = "Regularization", RMSE = min(best_lambda)) %>% knitr::kable()
+```
+
+\newpage 
+#### 2.5.5. Matrix Factorization:
+Due to the fact that not all users have rated every movie, the resulting matrix contains numerous missing values, resulting in a sparse matrix. To address this issue, matrix factorization is employed as a solution. The primary objective is to reconstruct the residuals, denoted as "r," utilizing the available data in our dataset. The model presented below utilizes matrix factorization techniques to enhance the RMSE metric by capturing latent factors and improving the accuracy of rating predictions.
+
+```{r Matrix Factorization, eval=FALSE, include=TRUE}
+# Calculating Movie Effect to be used in Matrix Factorization
+b_i <- edx %>% group_by(movieId) %>%     
+  summarize(b_i = sum(rating - mu_least_squares)/(n()+lambda))
+
+# Calculating Movie + User Effect to be used in Matrix Factorization
+b_u <- edx %>% left_join(b_i, by="movieId") %>% group_by(userId) %>% 
+  summarize(b_u = sum(rating - b_i - mu_least_squares)/(n()+lambda))
+
+# Adding the Residuals to "edx"
+edx_residual <- edx %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  mutate(residual = rating - mu_least_squares - b_i - b_u) %>%
+  select(userId, movieId, residual)
+
+# Preparing the datasets to be used with recommenderlab package 
+write.table(train_set , file = "trainset.txt" , 
+            sep = " " , row.names = FALSE, col.names = FALSE)
+write.table(test_set , file = "testset.txt" , 
+            sep = " " , row.names = FALSE, col.names = FALSE)
+
+edx_mf <- as.matrix(edx_residual)
+validation_mf <- validation %>% select(userId, movieId, rating)
+validation_mf<- as.matrix(validation_mf)
+
+write.table(validation_mf , file = "validation.txt" , 
+            sep = " " , row.names = FALSE, col.names = FALSE)
+train_set_mf<- data_file("trainset.txt")
+test_set_mf<- data_file("testset.txt")
+validation_mf<- data_file("validation.txt")
+
+# Building Recommender object & tuning it's parameters
+r<- Reco()
+tuning_mf <- r$tune(train_set_mf, opts = list(dim = c(10, 20, 30), lrate = c(0.1, 0.2),
+                                       costp_l1 = 0, costq_l1 = 0,
+                                       nthread = 1, niter = 10))
+
+# Training the Recommender model
+r$train(train_set_mf, opts = c(tuning_mf$min, nthread = 1, niter = 20))
+
+# Making prediction on the test_set % calculating RMSE
+pred_file <- tempfile()
+r$predict(test_set_mf, out_file(pred_file))
+predicted_residuals_mf <- scan(pred_file)
+mf_RMSE <- RMSE(predicted_residuals_mf, test_set$rating)
+RMSE_results <- bind_rows(RMSE_results, tibble(Model="Matrix Factorization Model",  
+                                               RMSE = mf_RMSE))
+```
+```{r Matrix Factorization Output, echo=FALSE}
+data.frame(Model = "Matrix Factorization", RMSE = mf_RMSE) %>% knitr::kable()
+```
+
+## 3. The final Results
+Throughout the process of constructing the models, the RMSE metric consistently decreased until it eventually reached the target value of less than 0.8. The table provided below summarizes the RMSE results obtained from all the models developed in this project. Notably, the lowest RMSE was achieved through the "Matrix Factorization" approach. However, it is important to note that this RMSE value was calculated based on predictions made using the test_set rather than the validation set. 
+```{r RMSE Results Table, echo=FALSE}
+options(digits = 3)
+RMSE_results_no_validation %>% knitr::kable()
+```
+
+Therefore, in this section I will use the best performing model \textcolor{rgb:red, 43;green,148;blue,71}{"Matrix Factorization"} to make predictions on the **`validation`** set & display the results.
+```{r Validation RMSE, eval=FALSE, include=TRUE}
+# Preparing Validation Set
+validation_rating <- read.table("validation.txt", header = FALSE, sep = " ")$V3
+
+# Making predictions on the validation set
+r$predict(validation_mf, out_file(pred_file))
+predicted_residuals_mf_validation <- scan(pred_file)
+
+# Calculating RMSE
+mf_RMSE_validation <- RMSE(predicted_residuals_mf_validation, validation_rating)
+RMSE_results <- bind_rows(RMSE_results, 
+                          tibble(Model="Validation using Matrix Factorization Model",  
+                                 RMSE = mf_RMSE_validation))
+mf_RMSE_validation
+```
+```{r Valdidation RMSE, echo=FALSE}
+options(digits = 7)
+data.frame(Model = "Validation using Matrix Factorization", RMSE = mf_RMSE_validation) %>% knitr::kable()
+```
+
+\newpage 
+## IV. Conclusion
+```{r Results Table, echo=FALSE}
+options(digits = 3)
+RMSE_results %>% knitr::kable()
+```
+The analysis of the RMSE summary table highlights that the Matrix Factorization model emerged as the top-performing model. It successfully reduced the RMSE from its initial Baseline value of 1.060 to an improved value of 0.790. This represents a significant improvement in prediction accuracy. Future iterations of this project could explore additional aspects, such as exploring correlations between movie genres and users belonging to the same age groups. By incorporating techniques like Principal Component Analysis (PCA) and Singular Value Decomposition (SVD), it is possible to further enhance the prediction of ratings and improve movie recommendations, increasing the likelihood of users enjoying the suggested movies.
